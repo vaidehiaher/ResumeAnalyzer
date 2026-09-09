@@ -65,7 +65,8 @@ jwt = JWTManager(app)
 
 db.init_app(app)
 
-ats_engine = ATSEngine()
+# Do NOT initialize ATSEngine during server startup
+ats_engine = None
 
 
 with app.app_context():
@@ -78,6 +79,7 @@ with app.app_context():
 
 @app.errorhandler(413)
 def file_too_large(error):
+
     return jsonify({
         "message": "File is too large. Maximum size is 10 MB."
     }), 413
@@ -331,6 +333,8 @@ def upload_resume():
 @jwt_required()
 def analyze_resume():
 
+    global ats_engine
+
     current_user = get_jwt_identity()
 
     data = request.get_json()
@@ -363,6 +367,10 @@ def analyze_resume():
 
     try:
 
+        # Initialize AI engine only when analysis is requested
+        if ats_engine is None:
+            ats_engine = ATSEngine()
+
         result = ats_engine.analyze(
             latest_resume.extracted_text,
             job_description
@@ -384,4 +392,13 @@ def analyze_resume():
 # =========================
 
 if __name__ == "__main__":
-    app.run()
+
+    app.run(
+        host="0.0.0.0",
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000
+            )
+        )
+    )
