@@ -6,15 +6,25 @@ class ResumeMatcher:
 
     def __init__(self):
 
-        self.model = SentenceTransformer(
-            "sentence-transformers/all-MiniLM-L6-v2"
-        )
+        # Model is loaded only when similarity() is called
+        self.model = None
+
+    def _load_model(self):
+
+        if self.model is None:
+
+            self.model = SentenceTransformer(
+                "sentence-transformers/all-MiniLM-L6-v2"
+            )
 
     def similarity(
         self,
         resume_text,
         job_description
     ):
+
+        # Load model when it is actually needed
+        self._load_model()
 
         embeddings = self.model.encode(
             [
