@@ -15,21 +15,37 @@ from flask_jwt_extended import (
     get_jwt_identity
 )
 
+from dotenv import load_dotenv
+
 from models import db, User, Resume
 
 import os
 import pdfplumber
 
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+from ai.ats_engine import ATSEngine
+
+
+# Load environment variables
+load_dotenv()
+
 
 app = Flask(__name__)
 
 CORS(app)
 
+
+# =========================
+# Configuration
+# =========================
+
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///resume.db"
 
-app.config["JWT_SECRET_KEY"] = "careerpilot-secret-key"
+app.config["JWT_SECRET_KEY"] = os.getenv(
+    "JWT_SECRET_KEY"
+)
+
+# Maximum upload size = 10 MB
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 UPLOAD_FOLDER = "uploads"
 
@@ -40,38 +56,84 @@ os.makedirs(
     exist_ok=True
 )
 
+
+# =========================
+# Initialize extensions
+# =========================
+
 jwt = JWTManager(app)
 
-# Hugging Face Model
-model = SentenceTransformer(
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
-
 db.init_app(app)
+
+ats_engine = ATSEngine()
+
 
 with app.app_context():
     db.create_all()
 
 
+# =========================
+# Error handling
+# =========================
+
+@app.errorhandler(413)
+def file_too_large(error):
+    return jsonify({
+        "message": "File is too large. Maximum size is 10 MB."
+    }), 413
+
+
+# =========================
+# Home
+# =========================
+
 @app.route("/")
 def home():
+
     return {
         "message": "CareerPilot AI Backend Running"
     }
 
+
+# =========================
+# Register
+# =========================
 
 @app.route("/register", methods=["POST"])
 def register():
 
     data = request.get_json()
 
+    if not data:
+        return jsonify({
+            "message": "Invalid request data"
+        }), 400
+
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    password = data.get("password", "")
+
+    if not name or not email or not password:
+        return jsonify({
+            "message": "Name, email and password are required"
+        }), 400
+
+    existing_user = User.query.filter_by(
+        email=email
+    ).first()
+
+    if existing_user:
+        return jsonify({
+            "message": "Email already registered"
+        }), 400
+
     hashed_password = generate_password_hash(
-        data["password"]
+        password
     )
 
     user = User(
-        name=data["name"],
-        email=data["email"],
+        name=name,
+        email=email,
         password=hashed_password
     )
 
@@ -83,13 +145,30 @@ def register():
     })
 
 
+# =========================
+# Login
+# =========================
+
 @app.route("/login", methods=["POST"])
 def login():
 
     data = request.get_json()
 
+    if not data:
+        return jsonify({
+            "message": "Invalid request data"
+        }), 400
+
+    email = data.get("email", "").strip()
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({
+            "message": "Email and password are required"
+        }), 400
+
     user = User.query.filter_by(
-        email=data["email"]
+        email=email
     ).first()
 
     if not user:
@@ -99,7 +178,7 @@ def login():
 
     if not check_password_hash(
         user.password,
-        data["password"]
+        password
     ):
         return jsonify({
             "message": "Invalid password"
@@ -115,6 +194,10 @@ def login():
     })
 
 
+# =========================
+# Profile
+# =========================
+
 @app.route("/profile")
 @jwt_required()
 def profile():
@@ -126,6 +209,10 @@ def profile():
         "message": "Protected route accessed successfully"
     })
 
+
+# =========================
+# Upload Resume
+# =========================
 
 @app.route("/upload-resume", methods=["POST"])
 @jwt_required()
@@ -140,28 +227,86 @@ def upload_resume():
 
     file = request.files["resume"]
 
+    if file.filename == "":
+        return jsonify({
+            "message": "No file selected"
+        }), 400
+
+    # Check file extension
+    if not file.filename.lower().endswith(".pdf"):
+        return jsonify({
+            "message": "Only PDF files are allowed"
+        }), 400
+
+    # Secure the filename
     filename = secure_filename(
         file.filename
     )
+
+    if not filename:
+        return jsonify({
+            "message": "Invalid filename"
+        }), 400
+
+    # Check actual PDF file signature
+    file_header = file.read(4)
+    file.seek(0)
+
+    if file_header != b"%PDF":
+        return jsonify({
+            "message": "Invalid PDF file"
+        }), 400
+
+    # Prevent filename collisions between users
+    safe_email = secure_filename(
+        current_user.split("@")[0]
+    )
+
+    filename = f"{safe_email}_{filename}"
 
     filepath = os.path.join(
         app.config["UPLOAD_FOLDER"],
         filename
     )
 
+    # Save file
     file.save(filepath)
 
+    # Extract text from PDF
     extracted_text = ""
 
-    with pdfplumber.open(filepath) as pdf:
+    try:
 
-        for page in pdf.pages:
+        with pdfplumber.open(filepath) as pdf:
 
-            text = page.extract_text()
+            for page in pdf.pages:
 
-            if text:
-                extracted_text += text + "\n"
+                text = page.extract_text()
 
+                if text:
+                    extracted_text += text + "\n"
+
+    except Exception:
+
+        # Remove invalid/corrupted PDF
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+        return jsonify({
+            "message": "Unable to read PDF file"
+        }), 400
+
+    # Make sure some text was extracted
+    if not extracted_text.strip():
+
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+        return jsonify({
+            "message": "Could not extract text from this PDF"
+        }), 400
+
+    # Save resume information
     resume = Resume(
         user_email=current_user,
         filename=filename,
@@ -178,18 +323,32 @@ def upload_resume():
     })
 
 
-@app.route("/match-job", methods=["POST"])
+# =========================
+# Analyze Resume
+# =========================
+
+@app.route("/analyze", methods=["POST"])
 @jwt_required()
-def match_job():
+def analyze_resume():
 
     current_user = get_jwt_identity()
 
     data = request.get_json()
 
+    if not data:
+        return jsonify({
+            "message": "Invalid request data"
+        }), 400
+
     job_description = data.get(
         "job_description",
         ""
-    )
+    ).strip()
+
+    if not job_description:
+        return jsonify({
+            "message": "Job description is required"
+        }), 400
 
     latest_resume = Resume.query.filter_by(
         user_email=current_user
@@ -199,66 +358,33 @@ def match_job():
 
     if not latest_resume:
         return jsonify({
-            "message": "No resume found"
+            "message": "No resume uploaded"
         }), 404
 
-    resume_text = latest_resume.extracted_text
+    try:
 
-    resume_embedding = model.encode(
-        [resume_text]
-    )
-
-    job_embedding = model.encode(
-        [job_description]
-    )
-
-    similarity = cosine_similarity(
-        resume_embedding,
-        job_embedding
-    )[0][0]
-
-    match_score = float(
-        round(
-            float(similarity) * 100,
-            2
+        result = ats_engine.analyze(
+            latest_resume.extracted_text,
+            job_description
         )
-    )
 
-    return jsonify({
-        "match_score": match_score
-    })
+        return jsonify(result)
 
+    except Exception as e:
 
-@app.route("/users")
-def users():
+        print("Analysis error:", e)
 
-    all_users = User.query.all()
-
-    result = []
-
-    for user in all_users:
-        result.append({
-            "id": user.id,
-            "name": user.name,
-            "email": user.email
-        })
-
-    return jsonify(result)
+        return jsonify({
+            "message": "AI analysis is temporarily unavailable. Please try again."
+        }), 503
 
 
-@app.route("/delete-all")
-def delete_all():
-
-    User.query.delete()
-
-    db.session.commit()
-
-    return {
-        "message": "All users deleted"
-    }
-
+# =========================
+# Run application
+# =========================
 
 if __name__ == "__main__":
+
     app.run(
         debug=True,
         use_reloader=False
