@@ -22,8 +22,6 @@ from models import db, User, Resume
 import os
 import pdfplumber
 
-from ai.ats_engine import ATSEngine
-
 
 # Load environment variables
 load_dotenv()
@@ -65,7 +63,7 @@ jwt = JWTManager(app)
 
 db.init_app(app)
 
-# Do NOT initialize ATSEngine during server startup
+# AI engine is initialized only when analysis is requested
 ats_engine = None
 
 
@@ -367,8 +365,11 @@ def analyze_resume():
 
     try:
 
-        # Initialize AI engine only when analysis is requested
+        # Import AI engine only when analysis is requested
         if ats_engine is None:
+
+            from ai.ats_engine import ATSEngine
+
             ats_engine = ATSEngine()
 
         result = ats_engine.analyze(
