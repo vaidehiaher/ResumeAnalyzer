@@ -1,17 +1,16 @@
-from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
 class ResumeMatcher:
 
     def __init__(self):
-
-        # Model is loaded only when similarity() is called
         self.model = None
 
     def _load_model(self):
 
         if self.model is None:
+
+            from sentence_transformers import SentenceTransformer
 
             self.model = SentenceTransformer(
                 "sentence-transformers/all-MiniLM-L6-v2"
@@ -23,7 +22,6 @@ class ResumeMatcher:
         job_description
     ):
 
-        # Load model when it is actually needed
         self._load_model()
 
         embeddings = self.model.encode(
