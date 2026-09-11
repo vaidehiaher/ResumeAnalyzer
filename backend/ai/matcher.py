@@ -1,20 +1,13 @@
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
 class ResumeMatcher:
 
     def __init__(self):
-        self.model = None
-
-    def _load_model(self):
-
-        if self.model is None:
-
-            from sentence_transformers import SentenceTransformer
-
-            self.model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2"
-            )
+        self.vectorizer = TfidfVectorizer(
+            stop_words="english"
+        )
 
     def similarity(
         self,
@@ -22,18 +15,18 @@ class ResumeMatcher:
         job_description
     ):
 
-        self._load_model()
+        documents = [
+            resume_text,
+            job_description
+        ]
 
-        embeddings = self.model.encode(
-            [
-                resume_text,
-                job_description
-            ]
+        embeddings = self.vectorizer.fit_transform(
+            documents
         )
 
         score = cosine_similarity(
-            [embeddings[0]],
-            [embeddings[1]]
+            embeddings[0:1],
+            embeddings[1:2]
         )[0][0]
 
         return round(
@@ -56,16 +49,12 @@ if __name__ == "__main__":
     job = """
     Looking for Python Flask Developer.
 
-    Skills
+    Skills:
 
     Python
-
     Flask
-
     Docker
-
     SQL
-
     Git
     """
 
